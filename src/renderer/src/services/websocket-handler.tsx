@@ -9,7 +9,8 @@ import {
 import { ModelInfo, useLive2DConfig } from '@/context/live2d-config-context';
 import { useSubtitle } from '@/context/subtitle-context';
 import { audioTaskQueue } from '@/utils/task-queue';
-import { useAudioTask } from '@/components/canvas/live2d';
+// 确保这里导入的是 useAudioTask 的原始定义路径，而不是从 live2d.tsx 重新导出的
+import { useAudioTask } from '@/hooks/utils/use-audio-task';
 import { useBgUrl } from '@/context/bgurl-context';
 import { useConfig } from '@/context/character-config-context';
 import { useChatHistory } from '@/context/chat-history-context';
@@ -19,6 +20,9 @@ import { AiState, useAiState } from "@/context/ai-state-context";
 import { useLocalStorage } from '@/hooks/utils/use-local-storage';
 import { useGroup } from '@/context/group-context';
 import { useInterrupt } from '@/hooks/utils/use-interrupt';
+// 导入 useLive2DModel 来获取 Live2D 模型的实例
+import { useLive2DModel } from '@/context/live2d-model-context';
+
 
 function WebSocketHandler({ children }: { children: React.ReactNode }) {
   const [wsState, setWsState] = useState<string>('CLOSED');
@@ -28,7 +32,70 @@ function WebSocketHandler({ children }: { children: React.ReactNode }) {
   const { setModelInfo } = useLive2DConfig();
   const { setSubtitleText } = useSubtitle();
   const { clearResponse, setForceNewMessage } = useChatHistory();
-  const { addAudioTask } = useAudioTask();
+  // 获取 Live2D 模型的实例
+  const { currentModel } = useLive2DModel();
+
+  // 使用 useRef 来持久化原始的眨眼更新函数
+  const originalEyeBlinkUpdateRef = useRef<(() => void) | null>(null);
+  // 用于跟踪上一个 Live2D 模型实例，以便在模型切换时重置眨眼函数
+  const lastModelRef = useRef<any>(null);
+
+  // 当 currentModel 发生变化时，重置保存的原始眨眼函数
+  useEffect(() => {
+    // 检查 currentModel 实例是否与上一个模型实例不同
+    // 这表示 Live2D 模型可能已被卸载并重新加载（例如，切换角色）
+    if (currentModel !== lastModelRef.current) {
+      originalEyeBlinkUpdateRef.current = null; // 清除保存的原始眨眼函数
+      lastModelRef.current = currentModel; // 更新上一个模型实例为当前模型
+      console.log("Live2D 模型实例已更改，重置了原始眨眼更新函数引用。");
+    }
+  }, [currentModel]); // 依赖 currentModel，当它变化时触发此 effect
+
+  /**
+   * @function disableAutoBlink
+   * @description 禁用 Live2D 模型的自动眨眼功能。
+   * 它会保存原始的眨眼更新函数，然后将其替换为一个空函数。
+   * 此函数现在在 WebSocketHandler 中定义，并使用 currentModel。
+   */
+  const disableAutoBlink = useCallback(() => {
+    const model = currentModel; // 使用从 useLive2DModel 获取的 currentModel 
+    // @ts-ignore eyeBlink is exist
+    if (model && model.internalModel && model.internalModel.eyeBlink) {
+      if (!originalEyeBlinkUpdateRef.current) {// @ts-ignore
+        originalEyeBlinkUpdateRef.current = model.internalModel.eyeBlink.update;
+      }
+      // @ts-ignore eyeBlink is exist
+      model.internalModel.eyeBlink.update = () => {}; 
+      console.log("自动眨眼已禁用。");
+    } else {
+      // 可以在这里添加更详细的日志，说明模型未初始化或没有 eyeBlink 模块
+      console.warn("无法禁用自动眨眼：模型未初始化或没有 eyeBlink 模块。");
+    }
+  }, [currentModel]); // 依赖 currentModel
+
+  /**
+   * @function enableAutoBlink
+   * @description 恢复 Live2D 模型的自动眨眼功能。
+   * 它会使用之前保存的原始眨眼更新函数来恢复功能。
+   * 此函数现在在 WebSocketHandler 中定义，并使用 currentModel。
+   */
+  const enableAutoBlink = useCallback(() => {
+    const model = currentModel; // 使用从 useLive2DModel 获取的 currentModel
+    // 只有当模型、eyeBlink 模块和原始函数都存在时才尝试恢复
+    // @ts-ignore eyeBlink is exist
+    if (model && model.internalModel && model.internalModel.eyeBlink && originalEyeBlinkUpdateRef.current) {
+      // @ts-ignore eyeBlink is exist
+      model.internalModel.eyeBlink.update = originalEyeBlinkUpdateRef.current;
+      console.log("自动眨眼已恢复。");
+    } else {
+      // 如果条件不满足，打印警告
+      console.warn("无法恢复自动眨眼：模型未初始化，没有 eyeBlink 模块或未保存原始函数。");
+    }
+  }, [currentModel]); // 依赖 currentModel
+
+  // 将 disableAutoBlink 和 enableAutoBlink 传递给 useAudioTask
+  const { addAudioTask } = useAudioTask({ disableAutoBlink, enableAutoBlink });
+
   const bgUrlContext = useBgUrl();
   const { confUid, setConfName, setConfUid, setConfigFiles } = useConfig();
   const [pendingModelInfo, setPendingModelInfo] = useState<ModelInfo | undefined>(undefined);
